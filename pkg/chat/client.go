@@ -71,7 +71,7 @@ func RunClient(serverAddr, username string) error {
 		}
 	}()
 
-	// User input loop with command history
+	// User input loop
 	scanner := bufio.NewScanner(os.Stdin)
 	fmt.Print("> ")
 	go func() {

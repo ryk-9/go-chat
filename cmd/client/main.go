@@ -2,9 +2,11 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/ryk-9/go-chat/pkg/chat"
 )
@@ -15,7 +17,7 @@ func main() {
 	username := flag.String("user", "", "Your username")
 	flag.Parse()
 
-	// Check if server address was provided
+	// Check if server address was provided via flags or positional args
 	if *serverAddr == "" {
 		if flag.NArg() > 0 {
 			*serverAddr = flag.Arg(0)
@@ -25,25 +27,38 @@ func main() {
 		}
 	}
 
-	// Validate required parameters
+	// If server address is still empty, prompt for it
 	if *serverAddr == "" {
-		fmt.Println("Error: Server address is required")
-		fmt.Println("\nUsage:")
-		fmt.Println("  go run main.go -server <host:port> -user <username>")
-		fmt.Println("  go run main.go <host:port> <username>")
-		fmt.Println("\nExample:")
-		fmt.Println("  go run main.go -server localhost:8080 -user alice")
-		fmt.Println("  go run main.go localhost:8080 alice")
-		os.Exit(1)
+		reader := bufio.NewReader(os.Stdin)
+		fmt.Print("Enter server address (e.g., localhost:8080): ")
+		input, _ := reader.ReadString('\n')
+		*serverAddr = strings.TrimSpace(input)
+
+		if *serverAddr == "" {
+			*serverAddr = "localhost:8080" // Default if empty
+			fmt.Printf("Using default server: %s\n", *serverAddr)
+		}
 	}
 
-	// Ask for username if not provided
+	// If username is empty, prompt for it
 	if *username == "" {
+		reader := bufio.NewReader(os.Stdin)
 		fmt.Print("Enter your username: ")
-		fmt.Scanln(username)
+		input, _ := reader.ReadString('\n')
+		*username = strings.TrimSpace(input)
+
+		// Keep prompting until we get a valid username
+		for *username == "" || len(*username) < 2 || len(*username) > 20 ||
+			strings.ContainsAny(*username, " \t\n/\\:") {
+			fmt.Println("Username must be 2-20 characters without spaces or special chars (/, \\, :)")
+			fmt.Print("Enter your username: ")
+			input, _ := reader.ReadString('\n')
+			*username = strings.TrimSpace(input)
+		}
 	}
 
 	// Run the client
+	fmt.Printf("Connecting as %s to %s...\n", *username, *serverAddr)
 	err := chat.RunClient(*serverAddr, *username)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
