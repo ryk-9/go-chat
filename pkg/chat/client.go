@@ -4,6 +4,7 @@ package chat
 import (
 	"bufio"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"os/signal"
@@ -40,6 +41,7 @@ func RunClient(serverAddr, username string) error {
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(username)); err != nil {
 		return fmt.Errorf("error sending username: %w", err)
 	}
+	log.Printf("Sent username: %s", username)
 
 	// Setup channels
 	done := make(chan struct{})
@@ -66,6 +68,7 @@ func RunClient(serverAddr, username string) error {
 			}
 
 			msgText := string(message)
+			log.Printf("Received message: %s", msgText)
 			fmt.Printf("\r%s\n", msgText)
 			fmt.Print("> ")
 		}
@@ -96,6 +99,7 @@ func RunClient(serverAddr, username string) error {
 			}
 
 			// Send the message
+			log.Printf("Sending message: %s", message)
 			err := conn.WriteMessage(websocket.TextMessage, []byte(message))
 			if err != nil {
 				fmt.Printf("Error sending message: %v\n", err)

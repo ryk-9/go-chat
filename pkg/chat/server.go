@@ -16,23 +16,13 @@ import (
 type Client struct {
 	Conn     *websocket.Conn
 	Username string
-	Send     chan []byte
 	Server   *Server
 }
 
-// Server manages all active clients and broadcasts messages
+// Server manages all active clients
 type Server struct {
 	// Map of active clients
 	Clients map[*Client]bool
-
-	// Channel for outbound messages to broadcast
-	Broadcast chan []byte
-
-	// Channel for registering clients
-	Register chan *Client
-
-	// Channel for unregistering clients
-	Unregister chan *Client
 
 	// Mutex to protect clients map from concurrent access
 	Mutex sync.Mutex
@@ -55,74 +45,27 @@ func NewServer() *Server {
 	return &Server{
 		Clients:        make(map[*Client]bool),
 		ClientJoinTime: make(map[*Client]time.Time),
-		Broadcast:      make(chan []byte),
-		Register:       make(chan *Client),
-		Unregister:     make(chan *Client),
 	}
 }
 
-// Run starts the server's main event loop
+// Run starts the server's main process (keeping for compatibility)
 func (s *Server) Run() {
-	for {
-		select {
-		case client := <-s.Register:
-			s.registerClient(client)
-		case client := <-s.Unregister:
-			s.unregisterClient(client)
-		case message := <-s.Broadcast:
-			s.broadcastMessage(message)
-		}
-	}
-}
-
-// registerClient adds a new client to the server
-func (s *Server) registerClient(client *Client) {
-	s.Mutex.Lock()
-	defer s.Mutex.Unlock()
-
-	s.Clients[client] = true
-	s.ClientJoinTime[client] = time.Now()
-	log.Printf("Client connected: %s", client.Username)
-
-	// Welcome message
-	welcomeMsg := fmt.Sprintf("Welcome %s! There are %d users online. Type /help for available commands.",
-		client.Username, len(s.Clients))
-	client.Send <- []byte(welcomeMsg)
-
-	// Broadcast join notification
-	s.Broadcast <- []byte(fmt.Sprintf("*** %s joined the chat ***", client.Username))
-}
-
-// unregisterClient removes a client from the server
-func (s *Server) unregisterClient(client *Client) {
-	s.Mutex.Lock()
-	defer s.Mutex.Unlock()
-
-	if _, ok := s.Clients[client]; ok {
-		delete(s.Clients, client)
-		delete(s.ClientJoinTime, client)
-		close(client.Send)
-		log.Printf("Client disconnected: %s", client.Username)
-
-		// Only broadcast if there was actually a client that left
-		s.Broadcast <- []byte(fmt.Sprintf("*** %s left the chat ***", client.Username))
-	}
+	log.Println("Server running and ready for connections")
+	// This method is now mostly for compatibility - the real work happens in the WebSocket handlers
 }
 
 // broadcastMessage sends a message to all connected clients
-func (s *Server) broadcastMessage(message []byte) {
+func (s *Server) broadcastMessage(message string) {
+	log.Printf("Broadcasting: %s", message)
+
 	s.Mutex.Lock()
 	defer s.Mutex.Unlock()
 
 	for client := range s.Clients {
-		select {
-		case client.Send <- message:
-			// Message sent successfully
-		default:
-			// Failed to send, client may be unresponsive
-			close(client.Send)
-			delete(s.Clients, client)
-			delete(s.ClientJoinTime, client)
+		err := client.Conn.WriteMessage(websocket.TextMessage, []byte(message))
+		if err != nil {
+			log.Printf("Error sending to client %s: %v", client.Username, err)
+			// Will be removed in ReadPump when connection error is detected
 		}
 	}
 }
@@ -144,6 +87,7 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	username := string(usernameMsg)
+	log.Printf("User connecting: %s", username)
 
 	// Check if username is already taken
 	s.Mutex.Lock()
@@ -166,14 +110,26 @@ func (s *Server) HandleWebSocket(w http.ResponseWriter, r *http.Request) {
 	client := &Client{
 		Conn:     conn,
 		Username: username,
-		Send:     make(chan []byte, 256),
 		Server:   s,
 	}
 
-	s.Register <- client
+	// Register client
+	s.Mutex.Lock()
+	s.Clients[client] = true
+	s.ClientJoinTime[client] = time.Now()
+	s.Mutex.Unlock()
 
-	// Start goroutines for reading and writing
-	go client.WritePump()
+	log.Printf("Client connected: %s", client.Username)
+
+	// Send welcome message
+	welcomeMsg := fmt.Sprintf("Welcome %s! There are %d users online. Type /help for available commands.",
+		client.Username, len(s.Clients))
+	client.Conn.WriteMessage(websocket.TextMessage, []byte(welcomeMsg))
+
+	// Broadcast join notification
+	s.broadcastMessage(fmt.Sprintf("*** %s joined the chat ***", client.Username))
+
+	// Start the reading goroutine
 	go client.ReadPump()
 }
 
@@ -193,16 +149,36 @@ func (s *Server) GetClientList() []string {
 // ReadPump reads messages from the client connection
 func (c *Client) ReadPump() {
 	defer func() {
-		c.Server.Unregister <- c
+		// Unregister client on disconnect
+		c.Server.Mutex.Lock()
+		delete(c.Server.Clients, c)
+		delete(c.Server.ClientJoinTime, c)
+		c.Server.Mutex.Unlock()
+
+		log.Printf("Client disconnected: %s", c.Username)
+		c.Server.broadcastMessage(fmt.Sprintf("*** %s left the chat ***", c.Username))
 		c.Conn.Close()
 	}()
 
+	// Setup ping/pong for keeping connection alive
 	c.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 	c.Conn.SetPongHandler(func(string) error {
 		c.Conn.SetReadDeadline(time.Now().Add(10 * time.Minute))
 		return nil
 	})
 
+	// Start a ticker to send pings
+	ticker := time.NewTicker(30 * time.Second)
+	go func() {
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := c.Conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(5*time.Second)); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Main message loop
 	for {
 		_, message, err := c.Conn.ReadMessage()
 		if err != nil {
@@ -213,6 +189,7 @@ func (c *Client) ReadPump() {
 		}
 
 		msgText := string(message)
+		log.Printf("Received from %s: %s", c.Username, msgText)
 
 		// Handle commands
 		if strings.HasPrefix(msgText, "/") {
@@ -222,56 +199,14 @@ func (c *Client) ReadPump() {
 
 		// Regular message
 		formattedMsg := fmt.Sprintf("%s: %s", c.Username, msgText)
-		c.Server.Broadcast <- []byte(formattedMsg)
-	}
-}
-
-// WritePump sends messages to the client connection
-func (c *Client) WritePump() {
-	ticker := time.NewTicker(30 * time.Second)
-	defer func() {
-		ticker.Stop()
-		c.Conn.Close()
-	}()
-
-	for {
-		select {
-		case message, ok := <-c.Send:
-			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if !ok {
-				// Channel closed, server closed the connection
-				c.Conn.WriteMessage(websocket.CloseMessage, []byte{})
-				return
-			}
-
-			w, err := c.Conn.NextWriter(websocket.TextMessage)
-			if err != nil {
-				return
-			}
-			w.Write(message)
-
-			// Add any queued messages
-			n := len(c.Send)
-			for i := 0; i < n; i++ {
-				w.Write([]byte{'\n'})
-				w.Write(<-c.Send)
-			}
-
-			if err := w.Close(); err != nil {
-				return
-			}
-		case <-ticker.C:
-			// Send ping to keep connection alive
-			c.Conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
-			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
-				return
-			}
-		}
+		c.Server.broadcastMessage(formattedMsg)
 	}
 }
 
 // handleCommand processes client commands like /help, /users, etc.
 func (c *Client) handleCommand(cmd string) {
+	log.Printf("Command from %s: %s", c.Username, cmd)
+
 	if cmd == "/help" {
 		helpMsg := `
 Available commands:
@@ -281,20 +216,20 @@ Available commands:
 /exit - Exit the chat
 /whisper <username> <message> - Send private message to a user
 `
-		c.Send <- []byte(helpMsg)
+		c.Conn.WriteMessage(websocket.TextMessage, []byte(helpMsg))
 	} else if cmd == "/users" {
 		users := c.Server.GetClientList()
 		usersMsg := fmt.Sprintf("Connected users (%d):\n", len(users))
 		for i, user := range users {
 			usersMsg += fmt.Sprintf("%d. %s\n", i+1, user)
 		}
-		c.Send <- []byte(usersMsg)
+		c.Conn.WriteMessage(websocket.TextMessage, []byte(usersMsg))
 	} else if cmd == "/time" {
-		c.Send <- []byte(fmt.Sprintf("Server time: %s", time.Now().Format(time.RFC1123)))
+		c.Conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Server time: %s", time.Now().Format(time.RFC1123))))
 	} else if strings.HasPrefix(cmd, "/whisper ") {
 		parts := strings.SplitN(cmd[9:], " ", 2)
 		if len(parts) != 2 {
-			c.Send <- []byte("Usage: /whisper <username> <message>")
+			c.Conn.WriteMessage(websocket.TextMessage, []byte("Usage: /whisper <username> <message>"))
 			return
 		}
 
@@ -312,15 +247,15 @@ Available commands:
 		c.Server.Mutex.Unlock()
 
 		if targetClient == nil {
-			c.Send <- []byte(fmt.Sprintf("User '%s' not found", targetUsername))
+			c.Conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("User '%s' not found", targetUsername)))
 			return
 		}
 
 		// Send to recipient
-		targetClient.Send <- []byte(fmt.Sprintf("[PM from %s]: %s", c.Username, message))
+		targetClient.Conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("[PM from %s]: %s", c.Username, message)))
 		// Confirmation to sender
-		c.Send <- []byte(fmt.Sprintf("[PM to %s]: %s", targetUsername, message))
+		c.Conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("[PM to %s]: %s", targetUsername, message)))
 	} else {
-		c.Send <- []byte(fmt.Sprintf("Unknown command: %s. Type /help for available commands.", cmd))
+		c.Conn.WriteMessage(websocket.TextMessage, []byte(fmt.Sprintf("Unknown command: %s. Type /help for available commands.", cmd)))
 	}
 }
