@@ -22,8 +22,8 @@ A real-time chat application built with Go that works across different WiFi netw
 ### Option 1: Clone the repository
 
 ```bash
-git clone https://github.com/yourusername/gochat.git
-cd gochat
+git clone https://github.com/ryk-9/go-chat.git
+cd go-chat
 go mod tidy
 ```
 
@@ -31,10 +31,10 @@ go mod tidy
 
 ```bash
 # Clone or create the project structure as shown
-mkdir -p gochat/cmd/{client,server} gochat/pkg/chat
+mkdir -p gochat/cmd/{client,server} go-chat/pkg/chat
 # Copy all the files to their respective locations
 # Run:
-cd gochat
+cd go-chat
 go mod tidy
 ```
 
