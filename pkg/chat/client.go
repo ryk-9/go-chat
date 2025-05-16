@@ -31,7 +31,9 @@ func RunClient(serverAddr, username string) error {
 	fmt.Printf("Connecting to %s...\n", u.String())
 
 	// Connect to the WebSocket server
-	conn, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
+	headers := make(map[string][]string)
+	headers["Ngrok-Skip-Browser-Warning"] = []string{"true"}
+	conn, _, err := websocket.DefaultDialer.Dial(u.String(), headers)
 	if err != nil {
 		return fmt.Errorf("connection error: %w", err)
 	}
@@ -41,7 +43,6 @@ func RunClient(serverAddr, username string) error {
 	if err := conn.WriteMessage(websocket.TextMessage, []byte(username)); err != nil {
 		return fmt.Errorf("error sending username: %w", err)
 	}
-	log.Printf("Sent username: %s", username)
 
 	// Setup channels
 	done := make(chan struct{})
@@ -68,7 +69,12 @@ func RunClient(serverAddr, username string) error {
 			}
 
 			msgText := string(message)
-			log.Printf("Received message: %s", msgText)
+
+			// Only log to debug level, not to console
+			log.SetOutput(os.Stderr)
+			log.SetFlags(0)
+
+			// Print the clean message to console
 			fmt.Printf("\r%s\n", msgText)
 			fmt.Print("> ")
 		}
@@ -98,8 +104,7 @@ func RunClient(serverAddr, username string) error {
 				return
 			}
 
-			// Send the message
-			log.Printf("Sending message: %s", message)
+			// Send the message silently without debug output
 			err := conn.WriteMessage(websocket.TextMessage, []byte(message))
 			if err != nil {
 				fmt.Printf("Error sending message: %v\n", err)

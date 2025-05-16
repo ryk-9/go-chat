@@ -16,6 +16,7 @@ import (
 func main() {
 	// Parse command-line flags
 	port := flag.Int("port", 8080, "Port to run the server on")
+	flag.IntVar(port, "p", 8080, "Port to run the server on (shorthand)")
 	flag.Parse()
 
 	// Initialize the server
